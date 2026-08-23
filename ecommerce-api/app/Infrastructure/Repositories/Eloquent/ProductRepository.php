@@ -1,57 +1,93 @@
+<?php
 namespace App\Infrastructure\Repositories\Eloquent;
 
-use App\Models\Product;
 use App\Infrastructure\Repositories\Contracts\ProductRepositoryInterface;
+use App\Models\Product;
+use App\Models\ProductVariant;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
-use Illuminate\Database\Eloquent\Collection;
 
 class ProductRepository implements ProductRepositoryInterface
 {
-    public function getAllPaginated(int $perPage = 15): LengthAwarePaginator
-        {
-                return Product::where('is_active', true)
-                            ->with(['category', 'media'])
-                                        ->latest()
-                                                    ->paginate($perPage);
-                                                        }
+    public function getAllPaginated(array $filters = [], int $perPage = 15): LengthAwarePaginator
+    {
+        $query = Product::with(['category', 'variants', 'media'])->latest();
 
-                                                            public function findById(string $id): ?Product
-                                                                {
-                                                                        return Product::with(['category', 'variants', 'media'])->find($id);
-                                                                            }
+        if (!empty($filters['category_id'])) {
+            $query->where('category_id', $filters['category_id']);
+        }
+        if (isset($filters['is_active'])) {
+            $query->where('is_active', filter_var($filters['is_active'], FILTER_VALIDATE_BOOLEAN));
+        }
+        if (!empty($filters['search'])) {
+            $query->where('name', 'like', '%' . $filters['search'] . '%');
+        }
 
-                                                                                public function create(array $data): Product
-                                                                                    {
-                                                                                            return Product::create($data);
-                                                                                                }
+        return $query->paginate($perPage);
+    }
 
-                                                                                                    public function update(string $id, array $data): bool
-                                                                                                        {
-                                                                                                                $product = $this->findById($id);
-                                                                                                                        return $product ? $product->update($data) : false;
-                                                                                                                            }
+    public function findById(string $id): ?Product
+    {
+        return Product::with(['category', 'variants', 'media'])->find($id);
+    }
 
-                                                                                                                                public function delete(string $id): bool
-                                                                                                                                    {
-                                                                                                                                            $product = $this->findById($id);
-                                                                                                                                                    return $product ? $product->delete() : false;
-                                                                                                                                                        }
+    public function create(array $data): Product
+    {
+        return Product::create($data);
+    }
 
-                                                                                                                                                            public function checkAndLockStock(Collection $items): void
-                                                                                                                                                                {
-                                                                                                                                                                        foreach ($items as $item) {
-                                                                                                                                                                                    $product = Product::where('id', $item->product_id)->lockForUpdate()->first();
-                                                                                                                                                                                                if (!$product || $product->stock < $item->quantity) {
-                                                                                                                                                                                                                throw new \Exception("المخزون غير كافٍ للمنتج: " . ($product?->name ?? 'غير معروف'));
-                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                    }
-                                                                                                                                                                                                                                        }
+    public function update(string $id, array $data): bool
+    {
+        $product = Product::find($id);
+        return $product ? $product->update($data) : false;
+    }
 
-                                                                                                                                                                                                                                            public function decrementStock(Collection $items): void
-                                                                                                                                                                                                                                                {
-                                                                                                                                                                                                                                                        foreach ($items as $item) {
-                                                                                                                                                                                                                                                                    Product::where('id', $item->product_id)->decrement('stock', $item->quantity);
-                                                                                                                                                                                                                                                                            }
-                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                }
-                                                                                                                                                                                                                                                                                
+    public function delete(string $id): bool
+    {
+        $product = Product::find($id);
+        return $product ? $product->delete() : false;
+    }
+
+    public function syncVariants(string $productId, array $variants): void
+    {
+        ProductVariant::where('product_id', $productId)->delete();
+
+        foreach ($variants as $variant) {
+            ProductVariant::create([
+                'product_id' => $productId,
+                'attributes' => is_array($variant['attributes'] ?? null) 
+                    ? json_encode($variant['attributes']) 
+                    : ($variant['attributes'] ?? '{}'),
+                'price'      => $variant['price'] ?? null,
+                'stock'      => (int) ($variant['stock'] ?? 0),
+                'sku'        => (int) ($variant['sku'] ?? 0),
+            ]);
+        }
+    }
+
+    public function adjustStock(string $productId, int $quantityChange): bool
+    {
+        $product = Product::find($productId);
+        if (!$product) {
+            return false;
+        }
+
+        if (($product->stock + $quantityChange) < 0) {
+            throw new \InvalidArgumentException("عذراً، لا يمكن خفض المخزون إلى ما دون الصفر.");
+        }
+
+        $product->stock += $quantityChange;
+        return $product->save();
+    }
+
+    public function bulkUpdateStatus(array $productIds, bool $isActive): int
+    {
+        return Product::whereIn('id', $productIds)->update(['is_active' => $isActive]);
+    }
+
+    public function bulkDelete(array $productIds): int
+    {
+        return Product::whereIn('id', $productIds)->delete();
+    }
+}
+?> 
+
